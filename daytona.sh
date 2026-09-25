@@ -61,7 +61,7 @@ QWRAP
     -L=":$GOST_PORT" -F="$FULL_URL" &>/dev/null 2>&1 || true
   sleep 3
 
-  local NP="localhost,127.0.0.1,::1,deb.debian.org,security.debian.org,snapshot.debian.org,archive.ubuntu.com,security.ubuntu.com,ppas.launchpadcontent.net"
+  local NP="localhost,127.0.0.1,::1,deb.debian.org,security.debian.org,snapshot.debian.org,archive.ubuntu.com,security.ubuntu.com,ppas.launchpadcontent.net,cloud-images.ubuntu.com"
 
   cat > /etc/profile.d/daytona-net.sh << EOF
 export HTTP_PROXY=http://127.0.0.1:${GOST_PORT}
@@ -143,16 +143,17 @@ FISHCONF
 }
 
 # ══════════════════════════════════════════════════════════════
-# PHASE 2: Mirror Selection (ping-based)
+# PHASE 2: Mirror Selection (ping-based) for cloud image
 # ══════════════════════════════════════════════════════════════
 select_fastest_mirror() {
   msg_info "Testing mirror speeds... / Đang kiểm tra tốc độ mirror..."
 
+  # Cloud image mirrors (Ubuntu 24.04 cloud image .img)
   declare -A MIRRORS
-  MIRRORS["France|Pháp"]="ubuntu.mirrors.ovh.net|https://ubuntu.mirrors.ovh.net/ubuntu-releases/24.04.5/ubuntu-24.04.5-live-server-amd64.iso"
-  MIRRORS["United States|Mỹ"]="mirror.pilotfiber.com|https://mirror.pilotfiber.com/ubuntu-iso/24.04.5/ubuntu-24.04.5-live-server-amd64.iso"
-  MIRRORS["Vietnam|Việt Nam"]="mirror.bizflycloud.vn|https://mirror.bizflycloud.vn/ubuntu-releases/24.04.5/ubuntu-24.04.5-live-server-amd64.iso"
-  MIRRORS["Australia|Úc"]="gsl-syd.mm.fcix.net|https://gsl-syd.mm.fcix.net/ubuntu-releases/24.04.5/ubuntu-24.04.5-live-server-amd64.iso"
+  MIRRORS["Official|Chính thức"]="cloud-images.ubuntu.com|https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
+  MIRRORS["Vietnam|Việt Nam"]="mirror.bizflycloud.vn|https://mirror.bizflycloud.vn/ubuntu-cloud-images/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
+  MIRRORS["France|Pháp"]="ubuntu.mirrors.ovh.net|https://ubuntu.mirrors.ovh.net/ubuntu-cloud-images/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
+  MIRRORS["Australia|Úc"]="gsl-syd.mm.fcix.net|https://gsl-syd.mm.fcix.net/ubuntu-cloud-images/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
 
   local best_url="" best_ping=99999 best_name=""
   for name in "${!MIRRORS[@]}"; do
@@ -171,29 +172,29 @@ select_fastest_mirror() {
   done
 
   if [ -z "$best_url" ]; then
-    msg_warn "All pings failed, using Vietnam mirror / Dùng mirror Việt Nam"
-    best_url="https://mirror.bizflycloud.vn/ubuntu-releases/24.04.5/ubuntu-24.04.5-live-server-amd64.iso"
-    best_name="Vietnam|Việt Nam"
+    msg_warn "All pings failed, using official mirror / Dùng mirror chính thức"
+    best_url="https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-amd64.img"
+    best_name="Official|Chính thức"
   fi
   echo ""
   msg_ok "Fastest / Nhanh nhất: ${W}${best_name}${N} (${best_ping}ms)"
-  VM_ISO_URL="$best_url"
+  VM_IMG_URL="$best_url"
 }
 
 # ══════════════════════════════════════════════════════════════
-# PHASE 3: Download ISO
+# PHASE 3: Download Cloud Image
 # ══════════════════════════════════════════════════════════════
-download_iso() {
-  local iso_filename; iso_filename=$(basename "$VM_ISO_URL")
-  VM_ISO="$VM_DIR/$iso_filename"
-  if [ -f "$VM_ISO" ]; then
-    msg_ok "ISO already downloaded / ISO đã tải: $iso_filename"; return 0
+download_image() {
+  local img_filename; img_filename=$(basename "$VM_IMG_URL")
+  VM_BASE_IMG="$VM_DIR/$img_filename"
+  if [ -f "$VM_BASE_IMG" ]; then
+    msg_ok "Cloud image already downloaded / Image đã tải: $img_filename"; return 0
   fi
-  msg_info "Downloading Ubuntu 24.04 ISO... / Đang tải ISO..."
-  if ! wget --progress=bar:force -O "$VM_ISO.tmp" "$VM_ISO_URL"; then
-    rm -f "$VM_ISO.tmp"; msg_err "Download failed! / Tải thất bại!"; exit 1
+  msg_info "Downloading Ubuntu 24.04 cloud image... / Đang tải cloud image..."
+  if ! wget --progress=bar:force -O "$VM_BASE_IMG.tmp" "$VM_IMG_URL"; then
+    rm -f "$VM_BASE_IMG.tmp"; msg_err "Download failed! / Tải thất bại!"; exit 1
   fi
-  mv "$VM_ISO.tmp" "$VM_ISO"
+  mv "$VM_BASE_IMG.tmp" "$VM_BASE_IMG"
   msg_ok "Download complete / Tải xong"
 }
 
@@ -221,23 +222,20 @@ setup_ovmf_vars() {
 }
 
 # ══════════════════════════════════════════════════════════════
-# QEMU launch (all virtio devices) with KVM -> TCG auto-fallback
+# QEMU launch (all virtio) with KVM -> TCG auto-fallback
 # ══════════════════════════════════════════════════════════════
 run_qemu() {
-  local ram="$1" cpus="$2" port="$3" boot="$4" iso="${5:-}"
+  local ram="$1" cpus="$2" port="$3" iso="${4:-}"
   local cmd=()
 
   cmd+=(
     -m "$ram" -smp "$cpus"
     -drive "if=pflash,format=raw,readonly=on,file=$OVMF_CODE"
     -drive "if=pflash,format=raw,file=$VM_OVMF_VARS"
-    -drive "file=$VM_DISK,format=raw,if=virtio"
+    -drive "file=$VM_DISK,format=qcow2,if=virtio"
   )
 
-  if [ -f "$VM_SEED" ] && [ "$boot" = "d" ]; then
-    cmd+=(-drive "file=$VM_SEED,format=raw,if=virtio")
-  fi
-
+  # Attach seed ISO via virtio-scsi on first boot for cloud-init
   if [ -n "$iso" ] && [ -f "$iso" ]; then
     cmd+=(
       -device virtio-scsi-pci,id=scsi0
@@ -247,7 +245,6 @@ run_qemu() {
   fi
 
   cmd+=(
-    -boot "order=$boot"
     -device virtio-vga
     -device virtio-net-pci,netdev=n0
     -netdev "user,id=n0,hostfwd=tcp::${port}-:${port}"
@@ -282,7 +279,7 @@ run_qemu() {
 }
 
 # ══════════════════════════════════════════════════════════════
-# PHASE 4: Create VM
+# PHASE 4: Create VM from Cloud Image
 # ══════════════════════════════════════════════════════════════
 create_vm() {
   local password="" password2="" ssh_port="" num_cpus="" ram_mb="" disk_size=""
@@ -326,119 +323,216 @@ create_vm() {
   done
 
   echo ""
-  msg_info "Creating VM... / Đang tạo VM..."
+  msg_info "Creating VM from cloud image... / Đang tạo VM từ cloud image..."
 
   local hashed_pw; hashed_pw=$(openssl passwd -6 "$password")
 
-  cat > "$VM_CONF" << EOF
-SSH_PORT=$ssh_port
-PASSWORD=$password
-HASHED_PW=$hashed_pw
-NUM_CPUS=$num_cpus
-RAM_MB=$ram_mb
-DISK_SIZE_GB=$disk_size
-CREATED=$(date)
-EOF
+  # Store password as base64 so shell metacharacters are safe in vm.conf.
+  local password_b64
+  password_b64=$(printf '%s' "$password" | base64 -w0)
+  cat > "$VM_CONF" << VMCONF
+SSH_PORT=${ssh_port}
+PASSWORD_B64=${password_b64}
+NUM_CPUS=${num_cpus}
+RAM_MB=${ram_mb}
+DISK_SIZE_GB=${disk_size}
+CREATED='$(date)'
+VMCONF
 
+  # --- Create disk from cloud image (qcow2 backing or copy + resize) ---
   if [ ! -f "$VM_DISK" ]; then
-    msg_info "Creating disk.img (${disk_size}G, raw/virtio)..."
-    qemu-img create -f raw "$VM_DISK" "${disk_size}G"
+    msg_info "Creating disk from cloud image (${disk_size}G, qcow2)..."
+    # Copy base image then resize
+    cp "$VM_BASE_IMG" "$VM_DISK"
+    qemu-img resize "$VM_DISK" "${disk_size}G"
   fi
-  msg_ok "Disk created / Đã tạo ổ đĩa"
+  msg_ok "Disk created / Đã tạo ổ đĩa (${disk_size}G)"
 
   setup_ovmf_vars
   find_ovmf_code
 
-  msg_info "Creating autoinstall config... / Đang tạo cấu hình autoinstall..."
+  # --- Create cloud-init seed ISO ---
+  msg_info "Creating cloud-init seed ISO... / Đang tạo seed ISO..."
   local tmpdir; tmpdir=$(mktemp -d)
 
+  # user-data: quoted heredoc to protect $6$ in hashed password
   cat > "$tmpdir/user-data" << 'USERDATA'
 #cloud-config
-autoinstall:
-  version: 1
-  locale: en_US.UTF-8
-  keyboard:
-    layout: us
-  identity:
-    hostname: ubuntu-vm
-    username: root
-    password: "@@HASHED_PW@@"
-  ssh:
-    install-server: true
-    allow-pw: true
-  storage:
-    layout:
-      name: direct
-  packages:
-    - openssh-server
-    - curl
-    - wget
-    - net-tools
-  late-commands:
-    - echo 'PermitRootLogin yes' >> /target/etc/ssh/sshd_config
-    - echo 'PasswordAuthentication yes' >> /target/etc/ssh/sshd_config
-    - sed -i 's/^#*Port .*/Port @@SSH_PORT@@/' /target/etc/ssh/sshd_config
-    - curtin in-target --target=/target -- passwd -u root
-    - echo 'root:@@PASSWORD@@' | curtin in-target --target=/target -- chpasswd
+hostname: ubuntu
+manage_etc_hosts: true
+fqdn: ubuntu.local
+
+users:
+  - name: root
+    lock_passwd: false
+    hashed_passwd: "@@HASHED_PW@@"
+    shell: /bin/bash
+    ssh_redirect_user: false
+
+ssh_pwauth: true
+
+chpasswd:
+  expire: false
+
+disable_root: false
+
+packages:
+  - openssh-server
+  - curl
+  - wget
+  - net-tools
+  - qemu-guest-agent
+
+write_files:
+  - path: /etc/ssh/sshd_config.d/99-custom.conf
+    content: |
+      PermitRootLogin yes
+      PasswordAuthentication yes
+      Port @@SSH_PORT@@
+    permissions: '0644'
+
+runcmd:
+  - passwd -u root
+  - echo 'root:@@PASSWORD@@' | chpasswd
+  - systemctl restart ssh || systemctl restart sshd
+  - growpart /dev/vda 1 || true
+  - resize2fs /dev/vda1 || xfs_growfs / || true
+
+power_state:
+  mode: reboot
+  message: "Cloud-init done, rebooting..."
+  timeout: 30
+  condition: true
+
+final_message: "Cloud-init completed in $UPTIME seconds"
 USERDATA
 
-  local safe_pw; safe_pw=$(printf '%s\n' "$hashed_pw" | sed 's/[&/\]/\\&/g')
-  local safe_pass; safe_pass=$(printf '%s\n' "$password" | sed 's/[&/\]/\\&/g')
+  # Replace placeholders
+  local safe_pw; safe_pw=$(printf '%s\n' "$hashed_pw" | sed 's|[&/\]|\\&|g')
+  local safe_pass; safe_pass=$(printf '%s\n' "$password" | sed 's|[&/\]|\\&|g')
   sed -i "s|@@HASHED_PW@@|${safe_pw}|g"  "$tmpdir/user-data"
   sed -i "s|@@SSH_PORT@@|${ssh_port}|g"   "$tmpdir/user-data"
   sed -i "s|@@PASSWORD@@|${safe_pass}|g"  "$tmpdir/user-data"
 
-  cat > "$tmpdir/meta-data" << 'METADATA'
-instance-id: iid-ubuntu-vm
-local-hostname: ubuntu-vm
+  cat > "$tmpdir/meta-data" << METADATA
+instance-id: iid-ubuntu-vm-$(date +%s)
+local-hostname: ubuntu
 METADATA
 
-  cloud-localds "$VM_SEED" "$tmpdir/user-data" "$tmpdir/meta-data"
+  # Network config (DHCP on default interface)
+  cat > "$tmpdir/network-config" << 'NETCFG'
+version: 2
+ethernets:
+  id0:
+    match:
+      driver: virtio
+    dhcp4: true
+    dhcp6: false
+NETCFG
+
+  cloud-localds -N "$tmpdir/network-config" "$VM_SEED" "$tmpdir/user-data" "$tmpdir/meta-data"
   rm -rf "$tmpdir"
-  msg_ok "Autoinstall seed created / Đã tạo seed"
+  msg_ok "Seed ISO created / Đã tạo seed ISO"
 
   echo ""
   echo -e "${C}══════════════════════════════════════════════════════════${N}"
-  echo -e "${W}  Starting Installation / Bắt đầu cài đặt${N}"
+  echo -e "${W}  Starting First Boot / Khởi động lần đầu${N}"
   echo -e "${C}══════════════════════════════════════════════════════════${N}"
   echo ""
-  msg_info "User: root | SSH Port: $ssh_port"
-  msg_info "CPU: $num_cpus cores (host) | RAM: ${ram_mb}MB | Disk: ${disk_size}GB"
+  msg_info "User: root | Hostname: ubuntu | SSH Port: $ssh_port"
+  msg_info "CPU: $num_cpus cores | RAM: ${ram_mb}MB | Disk: ${disk_size}GB"
   msg_info "All devices: ${W}Virtio${N} (disk, net, gpu, input, serial, balloon, rng, scsi)"
   msg_info "UEFI: ${W}OVMF${N}"
-  msg_info "SSH after install: ${Y}ssh -p $ssh_port root@localhost${N}"
+  msg_info "Cloud-init will configure the VM on first boot"
+  msg_info "SSH after boot: ${Y}ssh -p $ssh_port root@localhost${N}"
   msg_warn "Ctrl+A then X to exit QEMU / Nhấn Ctrl+A rồi X để thoát"
   echo ""
   sleep 2
 
-  local iso_file=""
-  shopt -s nullglob
-  local iso_candidates=("$VM_DIR"/*.iso)
-  shopt -u nullglob
-  for f in "${iso_candidates[@]}"; do
-    [[ "$(basename "$f")" == "seed.iso" ]] && continue
-    iso_file="$f"; break
+  # First boot with seed ISO attached
+  run_qemu "$ram_mb" "$num_cpus" "$ssh_port" "$VM_SEED"
+
+  msg_ok "First boot ended / Khởi động lần đầu kết thúc"
+}
+
+# Read only expected keys. Never source vm.conf: legacy HASHED_PW=$6$... causes
+# an unbound-variable error under set -u, and sourcing config executes shell code.
+load_vm_config() {
+  [ -s "$VM_CONF" ] || return 1
+  SSH_PORT="" PASSWORD="" NUM_CPUS="" RAM_MB="" DISK_SIZE_GB=""
+  local line key value
+  while IFS= read -r line || [ -n "$line" ]; do
+    [[ "$line" == *=* ]] || continue
+    key=${line%%=*}
+    value=${line#*=}
+    case "$key" in
+      SSH_PORT|NUM_CPUS|RAM_MB|DISK_SIZE_GB)
+        value=${value#\"}; value=${value%\"}
+        value=${value#\'}; value=${value%\'}
+        printf -v "$key" '%s' "$value"
+        ;;
+      PASSWORD)
+        value=${value#\"}; value=${value%\"}
+        value=${value#\'}; value=${value%\'}
+        PASSWORD=$value
+        ;;
+      PASSWORD_B64)
+        [[ "$value" =~ ^[A-Za-z0-9+/]*={0,2}$ ]] || return 1
+        PASSWORD=$(printf '%s' "$value" | base64 -d 2>/dev/null) || return 1
+        ;;
+      # Ignore legacy HASHED_PW=$6$... and unknown keys; never evaluate them.
+      *) ;;
+    esac
+  done < "$VM_CONF"
+  [[ "$SSH_PORT" =~ ^[0-9]+$ ]] && (( SSH_PORT >= 22 && SSH_PORT <= 10000 )) || return 1
+  [[ "$NUM_CPUS" =~ ^[0-9]+$ ]] && (( NUM_CPUS >= 1 )) || return 1
+  [[ "$RAM_MB" =~ ^[0-9]+$ ]] && (( RAM_MB >= 256 )) || return 1
+  [[ "$DISK_SIZE_GB" =~ ^[0-9]+$ ]] && (( DISK_SIZE_GB >= 5 )) || return 1
+  return 0
+}
+
+vm_files_ready() {
+  echo ""
+  msg_info "Checking VM files and runtime... / Đang kiểm tra file và môi trường VM..."
+  local bad=0 f
+  for f in "$VM_CONF" "$VM_DISK"; do
+    if [ -s "$f" ]; then msg_ok "Found: $(basename "$f")";
+    else msg_err "Missing or empty: $(basename "$f")"; bad=1; fi
   done
-
-  run_qemu "$ram_mb" "$num_cpus" "$ssh_port" "d" "$iso_file"
-
-  msg_ok "Installation ended / Phiên cài đặt kết thúc"
+  if [ -s "$VM_SEED" ]; then
+    msg_ok "Found: $(basename "$VM_SEED")"
+  else
+    msg_warn "Seed ISO missing; not needed for normal VM boot, only first boot."
+  fi
+  if [ ! -s "$VM_OVMF_VARS" ]; then
+    msg_warn "OVMF vars missing; restoring defaults."
+    setup_ovmf_vars || return 1
+  fi
+  find_ovmf_code || return 1
+  command -v qemu-system-x86_64 >/dev/null 2>&1 || {
+    msg_err "QEMU binary not found"; return 1;
+  }
+  load_vm_config || { msg_err "VM config is incomplete or invalid"; return 1; }
+  (( bad == 0 )) || return 1
+  msg_ok "VM files and configuration are ready"
+  return 0
 }
 
 # ══════════════════════════════════════════════════════════════
-# Start VM / Chạy VM
+# Start VM / Chạy VM (subsequent boots, no seed ISO)
 # ══════════════════════════════════════════════════════════════
 start_vm() {
-  [ ! -f "$VM_CONF" ] && { msg_err "No VM config / Không có cấu hình"; return 1; }
-  source "$VM_CONF"
+  [ -s "$VM_DISK" ] || { msg_err "VM disk missing or empty / Thiếu ổ đĩa VM"; return 1; }
+  load_vm_config || { msg_err "VM config is invalid / Cấu hình VM không hợp lệ"; return 1; }
   find_ovmf_code
+  [ -s "$VM_OVMF_VARS" ] || setup_ovmf_vars
 
   echo ""
   echo -e "${C}══════════════════════════════════════════════════════════${N}"
   echo -e "${W}  Starting VM / Đang khởi động VM${N}"
   echo -e "${C}══════════════════════════════════════════════════════════${N}"
   echo ""
-  msg_info "CPU: $NUM_CPUS cores (host) | RAM: ${RAM_MB}MB | Disk: ${DISK_SIZE_GB}GB"
+  msg_info "Hostname: ubuntu | CPU: $NUM_CPUS cores | RAM: ${RAM_MB}MB | Disk: ${DISK_SIZE_GB}GB"
   msg_info "All devices: ${W}Virtio${N}"
   msg_info "SSH: ${Y}ssh -p $SSH_PORT root@localhost${N}"
   msg_info "Password: $PASSWORD"
@@ -446,7 +540,8 @@ start_vm() {
   echo ""
   sleep 1
 
-  run_qemu "$RAM_MB" "$NUM_CPUS" "$SSH_PORT" "c" ""
+  # Normal boot without seed ISO (cloud-init already ran)
+  run_qemu "$RAM_MB" "$NUM_CPUS" "$SSH_PORT" ""
 
   msg_ok "VM stopped / VM đã dừng"
 }
@@ -460,15 +555,15 @@ delete_vm() {
   msg_input "Are you sure? / Chắc chứ? (y/N): "; read -r confirm
   if [[ "${confirm:-}" =~ ^[Yy]$ ]]; then
     rm -f "$VM_DISK" "$VM_SEED" "$VM_OVMF_VARS" "$VM_CONF"
-    msg_ok "VM deleted! ISO kept. / Đã xóa VM! Giữ ISO."
-    msg_info "Next run will reinstall. / Lần sau sẽ cài lại."
+    msg_ok "VM deleted! Cloud image kept. / Đã xóa VM! Giữ cloud image."
+    msg_info "Next run will recreate. / Lần sau sẽ tạo lại."
   else
     msg_info "Cancelled / Đã hủy"
   fi
 }
 
 # ══════════════════════════════════════════════════════════════
-# Header (58 visible chars between ║ borders + system info)
+# Header
 # ══════════════════════════════════════════════════════════════
 display_header() {
   clear 2>/dev/null || printf "\033[2J\033[H"
@@ -509,16 +604,21 @@ main() {
   setup_network_bypass
   mkdir -p "$VM_DIR"
 
-  if [ -f "$VM_CONF" ] && [ -f "$VM_DISK" ]; then
-    source "$VM_CONF"
+  # If a reusable VM exists, validate its files/config before showing the menu.
+  # The loader ignores old HASHED_PW=$6$ entries, fixing the reported set -u error.
+  if [ -s "$VM_CONF" ] && [ -s "$VM_DISK" ]; then
+    if ! vm_files_ready; then
+      msg_err "VM is incomplete or its config is invalid. No files were overwritten."
+      return 1
+    fi
     echo ""
     echo -e "${C}══════════════════════════════════════════════════════════${N}"
     echo -e "${W}  VM Menu / Menu VM${N}"
     echo -e "${C}══════════════════════════════════════════════════════════${N}"
     echo ""
     msg_ok "VM found / Đã tìm thấy VM"
-    msg_info "CPU: $NUM_CPUS | RAM: ${RAM_MB}MB | Disk: ${DISK_SIZE_GB}GB | SSH: $SSH_PORT"
-    msg_info "Devices: Virtio (all) | UEFI: OVMF"
+    msg_info "Hostname: ubuntu | CPU: $NUM_CPUS | RAM: ${RAM_MB}MB | Disk: ${DISK_SIZE_GB}GB | SSH: $SSH_PORT"
+    msg_info "Devices: Virtio (all) | UEFI: OVMF | KVM with TCG fallback"
     echo ""
     echo -e "  ${G}1)${N} Start VM / Chạy VM"
     echo -e "  ${R}2)${N} Delete VM / Xóa VM"
@@ -531,11 +631,14 @@ main() {
       3) msg_info "Goodbye! / Tạm biệt!"; exit 0 ;;
       *) msg_err "Invalid / Không hợp lệ"; exit 1 ;;
     esac
+  elif [ -s "$VM_CONF" ] || [ -s "$VM_DISK" ]; then
+    msg_err "Only part of the VM exists. Back it up and repair/remove incomplete files before reinstalling."
+    return 1
   else
-    msg_info "No VM found, starting fresh install... / Không tìm thấy VM, cài mới..."
+    msg_info "No VM found, creating from cloud image... / Không tìm thấy VM, tạo từ cloud image..."
     echo ""
     select_fastest_mirror
-    download_iso
+    download_image
     create_vm
   fi
 }
